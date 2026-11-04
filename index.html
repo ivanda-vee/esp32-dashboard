@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitor VFD Yaskawa</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #e8ebed;
+    --panel: #f5f6f7;
+    --ink: #192126;
+    --muted: #55626a;
+    --line: #c8cfd3;
+    --run: #17884c;
+    --stop: #66737d;
+    --fault: #cf2f27;
+    --warn: #b87500;
+    --idle: #9aa5ab;
+    --c: var(--idle);
+    --font: "Bahnschrift", "Segoe UI", system-ui, -apple-system, "Roboto", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1417;
+      --panel: #182024;
+      --ink: #e8eef1;
+      --muted: #96a4ac;
+      --line: #2a353b;
+      --run: #3fcf84;
+      --stop: #8c9ba5;
+      --fault: #ff6b61;
+      --warn: #f0b13a;
+      --idle: #4b575e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    line-height: 1.45;
+    -webkit-text-size-adjust: 100%;
+  }
+  body[data-state="run"]     { --c: var(--run); }
+  body[data-state="stop"]    { --c: var(--stop); }
+  body[data-state="fault"]   { --c: var(--fault); }
+  body[data-state="comm"]    { --c: var(--warn); }
+  body[data-state="stale"]   { --c: var(--warn); }
+  body[data-state="offline"] { --c: var(--idle); }
+  body[data-state="wait"]    { --c: var(--idle); }
+
+  main { max-width: 520px; margin: 0 auto; padding: 16px 16px 40px; }
+
+  .topbar {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    font-size: 0.875rem; color: var(--muted);
+    padding-bottom: 14px; border-bottom: 1px solid var(--line);
+  }
+  .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--idle); margin-right: 7px; vertical-align: 0;
+  }
+  .dot.ok { background: var(--run); }
+  .dot.bad { background: var(--fault); }
+  .dot.retry { background: var(--warn); }
+
+  /* Lampu indikator panel: elemen utama halaman */
+  .status {
+    display: flex; align-items: center; gap: 22px;
+    padding: 30px 4px 26px;
+  }
+  .lamp {
+    flex: none; width: 92px; height: 92px; border-radius: 50%;
+    background: radial-gradient(circle at 36% 30%,
+      color-mix(in srgb, var(--c) 55%, #fff) 0%,
+      var(--c) 52%,
+      color-mix(in srgb, var(--c) 68%, #000) 100%);
+    box-shadow:
+      0 0 0 6px var(--panel),
+      0 0 0 8px var(--line),
+      0 0 30px color-mix(in srgb, var(--c) 45%, transparent);
+  }
+  body[data-state="wait"] .lamp,
+  body[data-state="offline"] .lamp,
+  body[data-state="stop"] .lamp {
+    box-shadow: 0 0 0 6px var(--panel), 0 0 0 8px var(--line);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    body[data-state="fault"] .lamp { animation: berkedip 1.1s ease-in-out infinite; }
+    @keyframes berkedip { 50% { opacity: 0.45; } }
+  }
+  .word { font-size: 3.1rem; font-weight: 700; line-height: 1; letter-spacing: 0.01em; }
+  .word.small { font-size: 1.9rem; line-height: 1.1; }
+  .sub { margin-top: 8px; color: var(--muted); font-size: 0.95rem; }
+
+  .block { padding: 18px 0; border-top: 1px solid var(--line); }
+  .label { color: var(--muted); font-size: 0.9rem; margin-bottom: 4px; }
+  .freq { font-size: 2.6rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .freq .unit { font-size: 1.1rem; font-weight: 500; color: var(--muted); margin-left: 6px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); margin-top: 12px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; width: 0; background: var(--c); transition: width 0.4s ease; }
+
+  .faultbox {
+    margin: 0 0 4px; padding: 14px 16px; border-left: 5px solid var(--fault);
+    background: var(--panel);
+  }
+  .faultbox .name { font-size: 1.2rem; font-weight: 600; }
+  [hidden] { display: none !important; }
+
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; margin: 0; font-size: 0.95rem; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+  ul.hist { list-style: none; margin: 0; padding: 0; font-size: 0.95rem; }
+  ul.hist li { display: flex; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+  ul.hist time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  .empty { color: var(--muted); font-size: 0.95rem; }
+
+  /* Form pengaturan koneksi */
+  .setup h1 { font-size: 1.4rem; margin: 22px 0 6px; }
+  .setup p { color: var(--muted); margin: 0 0 18px; font-size: 0.95rem; }
+  .setup label { display: block; margin-bottom: 14px; font-size: 0.95rem; }
+  .setup input {
+    display: block; width: 100%; margin-top: 5px; padding: 11px 12px;
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .setup button {
+    font: inherit; font-weight: 600; padding: 12px 20px; border: 0; border-radius: 6px;
+    background: var(--ink); color: var(--bg); cursor: pointer;
+  }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--warn); outline-offset: 2px; }
+  .hint { margin-top: 14px; font-size: 0.85rem; color: var(--muted); }
+</style>
+</head>
+<body data-state="wait">
+<main>
+
+  <!-- Form koneksi: muncul jika alamat server belum diisi -->
+  <section class="setup" id="setup" hidden>
+    <h1>Hubungkan ke server MQTT</h1>
+    <p>Isi data akun EMQX, lalu dashboard langsung tampil. Data akun tidak disimpan di file ini, jadi perlu diisi lagi setiap halaman dibuka.</p>
+    <form id="setupForm">
+      <label>Alamat server (host EMQX)
+        <input id="fHost" required placeholder="xxxxxxxx.emqxsl.com" autocomplete="off" autocapitalize="none">
+      </label>
+      <label>Username
+        <input id="fUser" required autocomplete="username" autocapitalize="none">
+      </label>
+      <label>Password
+        <input id="fPass" type="password" required autocomplete="current-password">
+      </label>
+      <label>Port WebSocket TLS
+        <input id="fPort" inputmode="numeric" value="8084">
+      </label>
+      <button type="submit">Buka dashboard</button>
+    </form>
+    <p class="hint">Pakai akun khusus dashboard yang hanya boleh subscribe. Jika halaman dibuka dari alamat web (http/https), alamatnya ikut memuat pengaturan sehingga bisa dijadikan bookmark. Jangan bagikan alamat itu karena memuat password.</p>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="dash" hidden>
+    <div class="topbar">
+      <span><i class="dot" id="connDot"></i><span id="connText">Menyambung...</span></span>
+      <span><i class="dot" id="espDot"></i><span id="espText">ESP32 belum diketahui</span></span>
+    </div>
+
+    <div class="status" aria-live="polite">
+      <div class="lamp" aria-hidden="true"></div>
+      <div>
+        <div class="word" id="word">...</div>
+        <div class="sub" id="sub">Menunggu data pertama</div>
+      </div>
+    </div>
+
+    <div class="block" id="faultBlock" hidden>
+      <div class="faultbox">
+        <div class="label">Jenis fault</div>
+        <div class="name" id="faultName">-</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="label">Frekuensi keluaran</div>
+      <div class="freq"><span id="freq">-</span><span class="unit">Hz</span></div>
+      <div class="bar" aria-hidden="true"><span id="bar"></span></div>
+    </div>
+
+    <div class="block">
+      <dl>
+        <dt>Data terakhir</dt><dd id="lastTime">-</dd>
+        <dt>Status sejak</dt><dd id="sinceTime">-</dd>
+        <dt>Nilai register</dt><dd id="raw">-</dd>
+      </dl>
+    </div>
+
+    <div class="block">
+      <div class="label">Riwayat perubahan status</div>
+      <ul class="hist" id="hist"></ul>
+      <div class="empty" id="histEmpty">Belum ada perubahan sejak halaman dibuka.</div>
+    </div>
+  </section>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.2.1/mqtt.min.js"></script>
+<script>
+(function () {
+  // ---- Pengaturan bawaan (boleh diisi di sini, atau lewat alamat ?host=...&user=...&pass=...) ----
+  var DEFAULTS = {
+    host: "ybd6132b.ala.asia-southeast1.emqxsl.com",             // contoh: "xxxxxxxx.emqxsl.com"
+    port: 8084,           // port WebSocket TLS EMQX (cek di halaman Overview deployment)
+    path: "/mqtt",
+    user: "babi",
+    pass: "Asu123",
+    base: "vfd/yaskawa",  // topik: <base>/status dan <base>/online
+    maxHz: 50,            // frekuensi untuk batang penuh
+    staleSec: 15          // tanpa data selama ini dianggap "data lama"
+  };
+
+  var q = new URLSearchParams(location.search);
+  var cfg = {
+    host: q.get("host") || DEFAULTS.host,
+    port: q.get("port") || DEFAULTS.port,
+    path: q.get("path") || DEFAULTS.path,
+    user: q.get("user") || DEFAULTS.user,
+    pass: q.get("pass") || DEFAULTS.pass,
+    base: q.get("base") || DEFAULTS.base,
+    maxHz: Number(q.get("maxhz")) || DEFAULTS.maxHz,
+    staleSec: DEFAULTS.staleSec
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- Form koneksi bila data belum lengkap ----
+  if (!cfg.host || !cfg.user) {
+    $("setup").hidden = false;
+    $("setupForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      cfg.host = $("fHost").value.trim();
+      cfg.user = $("fUser").value.trim();
+      cfg.pass = $("fPass").value;
+      var port = $("fPort").value.trim();
+      if (port) cfg.port = port;
+
+      // Simpan pengaturan di alamat (untuk bookmark) hanya jika halaman dibuka lewat http/https.
+      // Untuk file yang dibuka dari penyimpanan HP, alamat tidak diubah.
+      if (location.protocol === "http:" || location.protocol === "https:") {
+        try {
+          var p = new URLSearchParams();
+          p.set("host", cfg.host);
+          p.set("user", cfg.user);
+          p.set("pass", cfg.pass);
+          if (String(cfg.port) !== "8084") p.set("port", cfg.port);
+          window.history.replaceState(null, "", "?" + p.toString());
+        } catch (err) { /* abaikan */ }
+      }
+      $("setup").hidden = true;
+      start();
+    });
+  } else {
+    start();
+  }
+
+  function start() {
+  $("dash").hidden = false;
+
+  // ---- Keadaan ----
+  var st = {
+    connected: false,
+    online: null,      // true / false / null (belum tahu)
+    status: null,      // RUN | STOP | FAULT | COMM_ERROR
+    freq: null,
+    raw: null,
+    fault: null,
+    last: 0,           // waktu data status terakhir (ms)
+    since: null        // waktu status berubah (Date)
+  };
+  var riwayat = [];
+
+  function hhmmss(d) {
+    return d.toLocaleTimeString("id-ID", { hour12: false });
+  }
+
+  function setConn(kind, text) {
+    $("connDot").className = "dot " + kind;
+    $("connText").textContent = text;
+  }
+
+  function addHistory(from, to, fault) {
+    riwayat.unshift({ t: new Date(), text: from + " ke " + to + (fault && to === "FAULT" ? " (" + fault + ")" : "") });
+    if (riwayat.length > 8) riwayat.pop();
+    var ul = $("hist");
+    ul.innerHTML = "";
+    riwayat.forEach(function (h) {
+      var li = document.createElement("li");
+      var t = document.createElement("time");
+      t.textContent = hhmmss(h.t);
+      var s = document.createElement("span");
+      s.textContent = h.text;
+      li.appendChild(t);
+      li.appendChild(s);
+      ul.appendChild(li);
+    });
+    $("histEmpty").hidden = true;
+  }
+
+  function render() {
+    // Tentukan tampilan utama
+    var state, word, sub, small = false;
+    var age = st.last ? (Date.now() - st.last) / 1000 : Infinity;
+
+    if (!st.connected && !st.status) {
+      state = "wait"; word = "Menyambung"; sub = "Belum terhubung ke server"; small = true;
+    } else if (st.online === false) {
+      state = "offline"; word = "ESP32 offline"; sub = "Perangkat pembaca tidak tersambung ke server"; small = true;
+    } else if (!st.status) {
+      state = "wait"; word = "Menunggu"; sub = "Menunggu data pertama dari ESP32"; small = true;
+    } else if (age > cfg.staleSec) {
+      state = "stale"; word = "Data lama"; sub = "Tidak ada data baru sejak " + hhmmss(new Date(st.last)); small = true;
+    } else if (st.status === "RUN") {
+      state = "run"; word = "RUN"; sub = "Motor berjalan";
+    } else if (st.status === "STOP") {
+      state = "stop"; word = "STOP"; sub = "Motor berhenti";
+    } else if (st.status === "FAULT") {
+      state = "fault"; word = "FAULT"; sub = "VFD trip, perlu dicek";
+    } else {
+      state = "comm"; word = "Tidak terbaca"; sub = "ESP32 tidak bisa membaca VFD (cek kabel RS485)"; small = true;
+    }
+
+    document.body.setAttribute("data-state", state);
+    $("word").textContent = word;
+    $("word").className = "word" + (small ? " small" : "");
+    $("sub").textContent = sub;
+
+    // Fault
+    var showFault = state === "fault";
+    $("faultBlock").hidden = !showFault;
+    if (showFault) $("faultName").textContent = st.fault || "Jenis fault belum terbaca";
+
+    // Frekuensi
+    var hasFreq = typeof st.freq === "number" && (state === "run" || state === "stop" || state === "fault");
+    $("freq").textContent = hasFreq ? st.freq.toFixed(2) : "-";
+    var pct = hasFreq ? Math.max(0, Math.min(100, (st.freq / cfg.maxHz) * 100)) : 0;
+    $("bar").style.width = pct + "%";
+
+    // Detail
+    $("lastTime").textContent = st.last ? hhmmss(new Date(st.last)) : "-";
+    $("sinceTime").textContent = st.since ? hhmmss(st.since) : "-";
+    $("raw").textContent = typeof st.raw === "number"
+      ? "0x" + st.raw.toString(16).toUpperCase().padStart(4, "0") : "-";
+
+    // ESP32
+    if (st.online === true) { $("espDot").className = "dot ok"; $("espText").textContent = "ESP32 online"; }
+    else if (st.online === false) { $("espDot").className = "dot bad"; $("espText").textContent = "ESP32 offline"; }
+    else { $("espDot").className = "dot"; $("espText").textContent = "ESP32 belum diketahui"; }
+  }
+
+  function onStatus(obj) {
+    var s = obj.status;
+    if (st.status && s !== st.status) {
+      addHistory(st.status, s, obj.fault);
+      st.since = new Date();
+    } else if (!st.status) {
+      st.since = new Date();
+    }
+    st.status = s;
+    st.freq = typeof obj.freq === "number" ? obj.freq : (s === "COMM_ERROR" ? null : st.freq);
+    st.raw = typeof obj.raw === "number" ? obj.raw : null;
+    st.fault = obj.fault && obj.fault !== "-" ? obj.fault : null;
+    st.last = Date.now();
+    render();
+  }
+
+  // ---- Koneksi MQTT lewat WebSocket TLS ----
+  var url = "wss://" + cfg.host + ":" + cfg.port + cfg.path;
+  var client = mqtt.connect(url, {
+    username: cfg.user,
+    password: cfg.pass,
+    clientId: "dashboard-" + Math.random().toString(16).slice(2, 10),
+    keepalive: 30,
+    reconnectPeriod: 3000,
+    connectTimeout: 10000,
+    clean: true
+  });
+
+  client.on("connect", function () {
+    st.connected = true;
+    setConn("ok", "Terhubung ke server");
+    client.subscribe([cfg.base + "/status", cfg.base + "/online"]);
+    render();
+  });
+  client.on("reconnect", function () {
+    st.connected = false;
+    setConn("retry", "Menyambung ulang...");
+    render();
+  });
+  client.on("close", function () {
+    st.connected = false;
+    setConn("bad", "Terputus dari server");
+    render();
+  });
+  client.on("error", function (err) {
+    setConn("bad", "Gagal: " + (err && err.message ? err.message : "koneksi ditolak"));
+  });
+  client.on("message", function (topic, payload) {
+    var text = payload.toString();
+    if (topic === cfg.base + "/online") {
+      st.online = text.trim() === "1";
+      render();
+    } else if (topic === cfg.base + "/status") {
+      try { onStatus(JSON.parse(text)); } catch (e) { /* abaikan pesan yang bukan JSON */ }
+    }
+  });
+
+  // Periksa "data lama" tiap detik
+  setInterval(render, 1000);
+  render();
+  }
+})();
+</script>
+</body>
+</html>
