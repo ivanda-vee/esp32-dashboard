@@ -108,6 +108,7 @@
     background: var(--panel);
   }
   .faultbox .name { font-size: 1.2rem; font-weight: 600; }
+  .faultbox.warn { border-left-color: var(--warn); }
   [hidden] { display: none !important; }
 
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; margin: 0; font-size: 0.95rem; }
@@ -118,6 +119,13 @@
   ul.hist li { display: flex; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--line); }
   ul.hist time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
   .empty { color: var(--muted); font-size: 0.95rem; }
+
+  details.raw { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.9rem; }
+  details.raw summary { cursor: pointer; color: var(--muted); }
+  details.raw pre {
+    margin: 10px 0 0; padding: 12px; overflow-x: auto; background: var(--panel);
+    border: 1px solid var(--line); font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  }
 
   /* Form pengaturan koneksi */
   .setup h1 { font-size: 1.4rem; margin: 22px 0 6px; }
@@ -189,6 +197,23 @@
       <div class="bar" aria-hidden="true"><span id="bar"></span></div>
     </div>
 
+    <div class="block" id="alarmBlock" hidden>
+      <div class="faultbox warn">
+        <div class="label">Alarm ringan (minor fault)</div>
+        <div class="name" id="alarmName">-</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <dl>
+        <dt>Arus keluaran</dt><dd id="mCur">-</dd>
+        <dt>Tegangan keluaran</dt><dd id="mVout">-</dd>
+        <dt>Tegangan DC bus</dt><dd id="mVdc">-</dd>
+        <dt>Daya keluaran</dt><dd id="mPwr">-</dd>
+        <dt>Suhu heatsink</dt><dd id="mTemp">-</dd>
+      </dl>
+    </div>
+
     <div class="block">
       <dl>
         <dt>Data terakhir</dt><dd id="lastTime">-</dd>
@@ -202,6 +227,11 @@
       <ul class="hist" id="hist"></ul>
       <div class="empty" id="histEmpty">Belum ada perubahan sejak halaman dibuka.</div>
     </div>
+
+    <details class="raw">
+      <summary>Pesan mentah dari server (untuk pengecekan)</summary>
+      <pre id="rawLog">Belum ada pesan.</pre>
+    </details>
   </section>
 
 </main>
@@ -276,10 +306,20 @@
     freq: null,
     raw: null,
     fault: null,
+    cur: null, vout: null, vdc: null, pwr: null, temp: null, alarm: null,
     last: 0,           // waktu data status terakhir (ms)
     since: null        // waktu status berubah (Date)
   };
   var riwayat = [];
+  var rawLog = [];
+
+  function addRaw(topic, text, retain) {
+    var d = new Date();
+    var jam = hhmmss(d) + "." + String(d.getMilliseconds()).padStart(3, "0");
+    rawLog.unshift(jam + (retain ? " [retained] " : " ") + topic + "  " + text);
+    if (rawLog.length > 15) rawLog.pop();
+    $("rawLog").textContent = rawLog.join("\n");
+  }
 
   function hhmmss(d) {
     return d.toLocaleTimeString("id-ID", { hour12: false });
@@ -353,6 +393,17 @@
     $("raw").textContent = typeof st.raw === "number"
       ? "0x" + st.raw.toString(16).toUpperCase().padStart(4, "0") : "-";
 
+    // Pengukuran tambahan (hanya saat data terbaru dan VFD terbaca)
+    var live = (state === "run" || state === "stop" || state === "fault");
+    function num(v, d, unit) { return (live && typeof v === "number") ? v.toFixed(d) + " " + unit : "-"; }
+    $("mCur").textContent  = num(st.cur, 2, "A");
+    $("mVout").textContent = num(st.vout, 1, "V");
+    $("mVdc").textContent  = num(st.vdc, 0, "V");
+    $("mPwr").textContent  = num(st.pwr, 2, "kW");
+    $("mTemp").textContent = num(st.temp, 0, "\u00B0C");
+    $("alarmBlock").hidden = !(live && st.alarm);
+    if (live && st.alarm) $("alarmName").textContent = st.alarm;
+
     // ESP32
     if (st.online === true) { $("espDot").className = "dot ok"; $("espText").textContent = "ESP32 online"; }
     else if (st.online === false) { $("espDot").className = "dot bad"; $("espText").textContent = "ESP32 offline"; }
@@ -371,6 +422,12 @@
     st.freq = typeof obj.freq === "number" ? obj.freq : (s === "COMM_ERROR" ? null : st.freq);
     st.raw = typeof obj.raw === "number" ? obj.raw : null;
     st.fault = obj.fault && obj.fault !== "-" ? obj.fault : null;
+    st.alarm = obj.alarm && obj.alarm !== "-" ? obj.alarm : null;
+    st.cur  = typeof obj.cur  === "number" ? obj.cur  : null;
+    st.vout = typeof obj.vout === "number" ? obj.vout : null;
+    st.vdc  = typeof obj.vdc  === "number" ? obj.vdc  : null;
+    st.pwr  = typeof obj.pwr  === "number" ? obj.pwr  : null;
+    st.temp = typeof obj.temp === "number" ? obj.temp : null;
     st.last = Date.now();
     render();
   }
@@ -406,8 +463,9 @@
   client.on("error", function (err) {
     setConn("bad", "Gagal: " + (err && err.message ? err.message : "koneksi ditolak"));
   });
-  client.on("message", function (topic, payload) {
+  client.on("message", function (topic, payload, packet) {
     var text = payload.toString();
+    addRaw(topic, text, packet && packet.retain);
     if (topic === cfg.base + "/online") {
       st.online = text.trim() === "1";
       render();
