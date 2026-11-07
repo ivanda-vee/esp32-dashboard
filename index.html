@@ -101,6 +101,10 @@
   .freq { font-size: 2.6rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .freq .unit { font-size: 1.1rem; font-weight: 500; color: var(--muted); margin-left: 6px; }
   .bar { height: 8px; border-radius: 4px; background: var(--line); margin-top: 12px; overflow: hidden; }
+  .bar { position: relative; }
+  .bar > i { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; background: var(--ink); display: none; }
+  .refline { margin-top: 12px; color: var(--muted); font-size: 0.95rem; }
+  .refline b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 6px; }
   .bar > span { display: block; height: 100%; width: 0; background: var(--c); transition: width 0.4s ease; }
 
   .faultbox {
@@ -194,7 +198,8 @@
     <div class="block">
       <div class="label">Frekuensi keluaran</div>
       <div class="freq"><span id="freq">-</span><span class="unit">Hz</span></div>
-      <div class="bar" aria-hidden="true"><span id="bar"></span></div>
+      <div class="bar" aria-hidden="true"><span id="bar"></span><i id="tick"></i></div>
+      <div class="refline">Frekuensi referensi<b id="refv">-</b></div>
     </div>
 
     <div class="block" id="alarmBlock" hidden>
@@ -306,6 +311,7 @@
     freq: null,
     raw: null,
     fault: null,
+    ref: null,
     cur: null, vout: null, vdc: null, pwr: null, temp: null, alarm: null,
     last: 0,           // waktu data status terakhir (ms)
     since: null        // waktu status berubah (Date)
@@ -387,6 +393,17 @@
     var pct = hasFreq ? Math.max(0, Math.min(100, (st.freq / cfg.maxHz) * 100)) : 0;
     $("bar").style.width = pct + "%";
 
+    // Frekuensi referensi (U1-01): penanda di batang dan angka di bawahnya
+    var hasRef = typeof st.ref === "number" && (state === "run" || state === "stop" || state === "fault");
+    $("refv").textContent = hasRef ? st.ref.toFixed(2) + " Hz" : "-";
+    var tk = $("tick");
+    if (hasRef) {
+      tk.style.display = "block";
+      tk.style.left = Math.max(0, Math.min(100, (st.ref / cfg.maxHz) * 100)) + "%";
+    } else {
+      tk.style.display = "none";
+    }
+
     // Detail
     $("lastTime").textContent = st.last ? hhmmss(new Date(st.last)) : "-";
     $("sinceTime").textContent = st.since ? hhmmss(st.since) : "-";
@@ -422,6 +439,7 @@
     st.freq = typeof obj.freq === "number" ? obj.freq : (s === "COMM_ERROR" ? null : st.freq);
     st.raw = typeof obj.raw === "number" ? obj.raw : null;
     st.fault = obj.fault && obj.fault !== "-" ? obj.fault : null;
+    st.ref  = typeof obj.ref  === "number" ? obj.ref  : null;
     st.alarm = obj.alarm && obj.alarm !== "-" ? obj.alarm : null;
     st.cur  = typeof obj.cur  === "number" ? obj.cur  : null;
     st.vout = typeof obj.vout === "number" ? obj.vout : null;
